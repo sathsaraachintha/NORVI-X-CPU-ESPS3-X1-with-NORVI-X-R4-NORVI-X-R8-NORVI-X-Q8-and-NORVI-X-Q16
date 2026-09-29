@@ -1,10 +1,69 @@
 #include <Wire.h>
 #include <SPI.h>
 #include <PCA9536D.h>
-#include <PCA9538.h>  
 
 #define LGFX_USE_V1
 #include <LovyanGFX.hpp>
+
+// ==========================================
+// --- EMBEDDED PCA9538 LIBRARY ---
+// ==========================================
+#define PCA9538_INPUT_REG    0x00
+#define PCA9538_OUTPUT_REG   0x01
+#define PCA9538_POLARITY_REG 0x02
+#define PCA9538_CONFIG_REG   0x03
+
+class PCA9538 {
+  private:
+    uint8_t _address;
+    
+    uint8_t readRegister(uint8_t reg) {
+      Wire.beginTransmission(_address);
+      Wire.write(reg);
+      Wire.endTransmission();
+      Wire.requestFrom(_address, (uint8_t)1);
+      return Wire.read();
+    }
+    
+    void writeRegister(uint8_t reg, uint8_t value) {
+      Wire.beginTransmission(_address);
+      Wire.write(reg);
+      Wire.write(value);
+      Wire.endTransmission();
+    }
+
+  public:
+    PCA9538(uint8_t address) {
+      _address = address;
+    }
+
+    void pinMode(uint8_t pin, uint8_t mode) {
+      uint8_t config = readRegister(PCA9538_CONFIG_REG);
+      if (mode == OUTPUT) {
+        config &= ~(1 << pin); // Set bit to 0 for Output
+      } else {
+        config |= (1 << pin);  // Set bit to 1 for Input
+      }
+      writeRegister(PCA9538_CONFIG_REG, config);
+    }
+
+    void digitalWrite(uint8_t pin, uint8_t value) {
+      uint8_t outState = readRegister(PCA9538_OUTPUT_REG);
+      if (value == HIGH) {
+        outState |= (1 << pin);
+      } else {
+        outState &= ~(1 << pin);
+      }
+      writeRegister(PCA9538_OUTPUT_REG, outState);
+    }
+
+    uint8_t digitalRead(uint8_t pin) {
+      uint8_t inState = readRegister(PCA9538_INPUT_REG);
+      return (inState & (1 << pin)) ? HIGH : LOW;
+    }
+};
+// ==========================================
+
 
 // --- LovyanGFX Display Configuration for NORVI X ---
 class LGFX : public lgfx::LGFX_Device {
@@ -131,9 +190,9 @@ void setup() {
   Wire.begin(SDA_PIN, SCL_PIN);
   I2C_SCAN();
 
-  // --- Initialize Modules using your PCA9538 Library ---
+  // --- Initialize Modules using embedded PCA9538 class ---
   for (int i = 0; i < 8; i++) {
-    // R4 Module (Pins 0 to 3 matter physically)
+    // R4 Module
     module_r4.pinMode(i, OUTPUT);
     module_r4.digitalWrite(i, LOW); 
     
