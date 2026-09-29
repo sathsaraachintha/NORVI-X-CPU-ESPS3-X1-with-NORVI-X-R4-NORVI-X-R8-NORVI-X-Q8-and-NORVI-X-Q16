@@ -1,7 +1,7 @@
 #include <Wire.h>
 #include <SPI.h>
 #include <PCA9536D.h>
-#include "PCA9538.h"   // <--- Added your new library!
+#include <PCA9538.h>  
 
 #define LGFX_USE_V1
 #include <LovyanGFX.hpp>
@@ -65,7 +65,6 @@ LGFX tft;
 
 // ==========================================
 // OUTPUT EXPANSION MODULE ADDRESSES 
-// (Make sure your physical DIP switches match these!)
 // ==========================================
 #define R4_ADDR  0x70
 #define R8_ADDR  0x71
@@ -134,17 +133,17 @@ void setup() {
 
   // --- Initialize Modules using your PCA9538 Library ---
   for (int i = 0; i < 8; i++) {
-    // R4 Module
+    // R4 Module (Pins 0 to 3 matter physically)
     module_r4.pinMode(i, OUTPUT);
-    module_r4.digitalWrite(i, LOW); // Set OFF
+    module_r4.digitalWrite(i, LOW); 
     
     // R8 Module
     module_r8.pinMode(i, OUTPUT);
-    module_r8.digitalWrite(i, LOW); // Set OFF
+    module_r8.digitalWrite(i, LOW); 
     
     // Q8 Module
     module_q8.pinMode(i, OUTPUT);
-    module_q8.digitalWrite(i, LOW); // Set OFF
+    module_q8.digitalWrite(i, LOW); 
   }
   
   // --- Initialize Q16 Module (Using raw commands because it's 16-bit) ---
@@ -155,6 +154,8 @@ void setup() {
   if (io.begin()) {
     io.pinMode(IO_PB1, INPUT);
     io.pinMode(IO_PB2, INPUT);
+  } else {
+    Serial.println("PCA9536 front panel buttons not found!");
   }
 
   // Initialize TFT Display
@@ -165,8 +166,8 @@ void setup() {
 }
 
 void loop() {
-  bool currentPb1 = io.digitalRead(IO_PB1); 
-  bool currentPb2 = io.digitalRead(IO_PB2); 
+  bool currentPb1 = io.digitalRead(IO_PB1); // Next Page Button
+  bool currentPb2 = io.digitalRead(IO_PB2); // Toggle Outputs Button
 
   // --- Navigate Pages (Button 1) ---
   if (currentPb1 == LOW && lastPb1State == HIGH) {
@@ -180,16 +181,22 @@ void loop() {
   // --- Toggle Outputs ON/OFF (Button 2) ---
   if (currentPb2 == LOW && lastPb2State == HIGH) {
     if (currentPage == 0) {
-      r4_state = (r4_state == 0x00) ? 0x0F : 0x00; // Toggle logic state
-      for (int i = 0; i < 4; i++) module_r4.digitalWrite(i, bitRead(r4_state, i) ? HIGH : LOW);
+      r4_state = (r4_state == 0x00) ? 0x0F : 0x00; 
+      for (int i = 0; i < 4; i++) {
+        module_r4.digitalWrite(i, bitRead(r4_state, i) ? HIGH : LOW);
+      }
     } 
     else if (currentPage == 1) {
       r8_state = (r8_state == 0x00) ? 0xFF : 0x00; 
-      for (int i = 0; i < 8; i++) module_r8.digitalWrite(i, bitRead(r8_state, i) ? HIGH : LOW);
+      for (int i = 0; i < 8; i++) {
+        module_r8.digitalWrite(i, bitRead(r8_state, i) ? HIGH : LOW);
+      }
     } 
     else if (currentPage == 2) {
       q8_state = (q8_state == 0x00) ? 0xFF : 0x00; 
-      for (int i = 0; i < 8; i++) module_q8.digitalWrite(i, bitRead(q8_state, i) ? HIGH : LOW);
+      for (int i = 0; i < 8; i++) {
+        module_q8.digitalWrite(i, bitRead(q8_state, i) ? HIGH : LOW);
+      }
     } 
     else if (currentPage == 3) {
       q16_state = (q16_state == 0x0000) ? 0xFFFF : 0x0000; 
