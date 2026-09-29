@@ -59,71 +59,53 @@ LGFX tft;
 #define SCL_PIN 9
 
 // PCA9536 Built-in Buttons (I2C 0x41)
-#define IO_PB1  0  // Not used in this single-page code
+#define IO_PB1  0  // "Next" Button (Not used in this single-page app)
 #define IO_PB2  3  // "Toggle Outputs" Button
 
 // ==========================================
-// Q8 EXPANSION MODULE ADDRESS
-// Change this if your scanner shows a different address!
+// X-Q4 DIRECT GPIO PINS 
+// (Typically shares the same 4 direct lines as the DI4)
 // ==========================================
-#define Q8_ADDR 0x72 
+#define Q4_OUT1 5
+#define Q4_OUT2 6
+#define Q4_OUT3 7
+#define Q4_OUT4 10
 // ==========================================
 
 // --- Objects & State Variables ---
 PCA9536 io;
-uint8_t q8_state = 0x00; // Track ON/OFF state (0x00 = OFF, 0xFF = ON)
+
+// Track the ON/OFF state of the Q4 (false = OFF, true = ON)
+bool q4_state = false; 
 
 bool lastPb2State = HIGH;
 unsigned long lastDisplayUpdate = 0;
-
-// --- I2C Write Helper Function ---
-void write8(uint8_t addr, uint8_t reg, uint8_t data) {
-  Wire.beginTransmission(addr);
-  Wire.write(reg);
-  Wire.write(data);
-  Wire.endTransmission();
-}
-
-// --- I2C Scanner Function ---
-void I2C_SCAN() {
-    byte error, address;
-    int deviceCount = 0;
-    Serial.println("Scanning I2C Bus...");
-    for (address = 1; address < 127; address++) {
-        Wire.beginTransmission(address);
-        error = Wire.endTransmission();
-        if (error == 0) {
-            Serial.print("I2C device found at address 0x");
-            if (address < 16) Serial.print("0");
-            Serial.println(address, HEX);
-            deviceCount++;
-            delay(1);
-        }
-    }
-    if (deviceCount == 0) Serial.println("No I2C devices found\n");
-    else Serial.println("Scanning complete\n");
-}
 
 void setup() {
   Serial.begin(115200);
   delay(1000);
 
+  // Initialize I2C (Required for the front panel buttons)
   Wire.begin(SDA_PIN, SCL_PIN);
 
-  // Run scanner on boot to help you verify the address
-  I2C_SCAN();
+  // --- Initialize Q4 Pins as Outputs ---
+  pinMode(Q4_OUT1, OUTPUT);
+  pinMode(Q4_OUT2, OUTPUT);
+  pinMode(Q4_OUT3, OUTPUT);
+  pinMode(Q4_OUT4, OUTPUT);
 
-  // --- Initialize Q8 Module as Output ---
-  // PCA9538 Config Register is 0x03. Write 0x00 to set all pins to Output.
-  write8(Q8_ADDR, 0x03, 0x00);
-  
-  // Ensure all outputs are OFF on boot (Output Register 0x01)
-  write8(Q8_ADDR, 0x01, 0x00);
+  // Ensure they are OFF on boot
+  digitalWrite(Q4_OUT1, LOW);
+  digitalWrite(Q4_OUT2, LOW);
+  digitalWrite(Q4_OUT3, LOW);
+  digitalWrite(Q4_OUT4, LOW);
 
   // Initialize Built-in Buttons
   if (io.begin()) {
     io.pinMode(IO_PB1, INPUT);
     io.pinMode(IO_PB2, INPUT);
+  } else {
+    Serial.println("Front panel buttons not found!");
   }
 
   // Initialize TFT Display
@@ -134,13 +116,20 @@ void setup() {
 }
 
 void loop() {
-  bool currentPb2 = io.digitalRead(IO_PB2); // Toggle Outputs
+  // Read the "Toggle" button
+  bool currentPb2 = io.digitalRead(IO_PB2); 
 
-  // --- Toggle Outputs ON/OFF (Button 2) ---
+  // --- Toggle Q4 Outputs ON/OFF (Button 2) ---
   if (currentPb2 == LOW && lastPb2State == HIGH) {
-    // Flip all 8 bits from 00000000 (OFF) to 11111111 (ON)
-    q8_state = (q8_state == 0x00) ? 0xFF : 0x00; 
-    write8(Q8_ADDR, 0x01, q8_state);
+    // Flip the state
+    q4_state = !q4_state; 
+    
+    // Apply the new state to all 4 physical pins
+    digitalWrite(Q4_OUT1, q4_state ? HIGH : LOW);
+    digitalWrite(Q4_OUT2, q4_state ? HIGH : LOW);
+    digitalWrite(Q4_OUT3, q4_state ? HIGH : LOW);
+    digitalWrite(Q4_OUT4, q4_state ? HIGH : LOW);
+    
     delay(50); // Debounce
   }
   lastPb2State = currentPb2;
@@ -148,38 +137,26 @@ void loop() {
   // --- Update Display ---
   if (millis() - lastDisplayUpdate >= 100) {
     lastDisplayUpdate = millis();
+    
     tft.setCursor(0, 5);
+    
+    tft.setTextColor(TFT_ORANGE, TFT_BLACK);
+    tft.println("   X-Q4 Outputs     ");
+    tft.println("--------------------");
+    tft.setTextColor(TFT_WHITE, TFT_BLACK);
+    
+    // Display the current state of each pin
+    tft.printf(" OUT 1: %s \n", digitalRead(Q4_OUT1) ? "ON " : "OFF");
+    tft.printf(" OUT 2: %s \n", digitalRead(Q4_OUT2) ? "ON " : "OFF");
+    tft.printf(" OUT 3: %s \n", digitalRead(Q4_OUT3) ? "ON " : "OFF");
+    tft.printf(" OUT 4: %s \n", digitalRead(Q4_OUT4) ? "ON " : "OFF");
 
-    displayQ8();
+    for(int i=0; i<4; i++) tft.println("                    "); 
     
     // UI Navigation Hint 
     tft.setTextColor(TFT_WHITE, TFT_BLACK);
     tft.setCursor(0, 260);
     tft.println("--------------------");
     tft.println("[B2:TOGGLE ALL]     ");
-  }
-}
-
-// --- Display Function ---
-void displayQ8() {
-  tft.setTextColor(TFT_ORANGE, TFT_BLACK);
-  tft.println("   X-Q8 Outputs     ");
-  tft.println("--------------------");
-
-  // Check if the module is actually connected at Q8_ADDR
-  Wire.beginTransmission(Q8_ADDR);
-  if (Wire.endTransmission() != 0) {
-    tft.setTextColor(TFT_RED, TFT_BLACK);
-    tft.println(" Module Not Found!  ");
-    tft.println(" Check Address!     ");
-    for(int i=0; i<6; i++) tft.println("                    "); 
-    return;
-  }
-
-  // If found, display the states
-  tft.setTextColor(TFT_WHITE, TFT_BLACK);
-  for (int i = 0; i < 8; i++) {
-    bool state = bitRead(q8_state, i);
-    tft.printf(" OUT %d: %s \n", i + 1, state ? "ON " : "OFF");
   }
 }
