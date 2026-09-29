@@ -1,4 +1,4 @@
-#include <Wire.h>         // <--- This fixes the "Wire not declared" error!
+#include <Wire.h>
 #include <SPI.h>
 #include <PCA9536D.h>
 
@@ -62,14 +62,25 @@ LGFX tft;
 #define IO_PB1  0  // "Next" Button
 #define IO_PB2  3  // "Toggle Outputs" Button
 
-// --- Auto-Scan Variables ---
-#define MAX_MODULES 4
-uint8_t extModules[MAX_MODULES];       // Stores discovered addresses
-uint16_t moduleStates[MAX_MODULES];    // Stores the ON/OFF state for each module
-int numModulesFound = 0;
+// ==========================================
+// OUTPUT EXPANSION MODULE ADDRESSES 
+// ==========================================
+#define R4_ADDR  0x73
+#define R8_ADDR  0x71
+#define Q8_ADDR  0x72
+#define Q16_ADDR 0x27  
+// ==========================================
 
+// --- Objects & State Variables ---
 PCA9536 io;
-int currentPage = 0; 
+int currentPage = 0; // 0=R4, 1=R8, 2=Q8, 3=Q16
+
+// Track the current ON/OFF state of each module
+uint8_t  r4_state  = 0x00;
+uint8_t  r8_state  = 0x00;
+uint8_t  q8_state  = 0x00;
+uint16_t q16_state = 0x0000;
+
 bool lastPb1State = HIGH;
 bool lastPb2State = HIGH;
 unsigned long lastDisplayUpdate = 0;
@@ -85,83 +96,77 @@ void write8(uint8_t addr, uint8_t reg, uint8_t data) {
 void write16(uint8_t addr, uint8_t reg, uint16_t data) {
   Wire.beginTransmission(addr);
   Wire.write(reg);
-  Wire.write(data & 0xFF);         // LSB
-  Wire.write((data >> 8) & 0xFF);  // MSB
+  Wire.write(data & 0xFF);         // LSB (Port 0)
+  Wire.write((data >> 8) & 0xFF);  // MSB (Port 1)
   Wire.endTransmission();
 }
 
-// --- Your Verbose I2C Scanner (Modified to auto-detect modules) ---
+// --- I2C Scanner Function ---
 void I2C_SCAN() {
-  byte error, address;
-  int deviceCount = 0;
+    byte error, address;
+    int deviceCount = 0;
 
-  Serial.println("Scanning I2C Bus...");
+    Serial.println("Scanning...");
 
-  for (address = 1; address < 127; address++) {
-    Wire.beginTransmission(address);
-    error = Wire.endTransmission();
+    for (address = 1; address < 127; address++) {
+        Wire.beginTransmission(address);
+        error = Wire.endTransmission();
 
-    if (error == 0) {
-      Serial.print("I2C device found at address 0x");
-      if (address < 16) {
-        Serial.print("0");
-      }
-      Serial.print(address, HEX);
-      
-      // Check if it's an internal NORVI CPU component or an Expansion Module
-      if (address == 0x15 || address == 0x41 || address == 0x68 || address == 0x75) {
-        Serial.println(" (Internal Component)");
-      } else {
-        Serial.println(" ! <-- Expansion Module Detected!");
-        // Save the expansion module address for our UI
-        if (numModulesFound < MAX_MODULES) {
-          extModules[numModulesFound] = address;
-          moduleStates[numModulesFound] = 0x0000; // Default to OFF
-          numModulesFound++;
+        if (error == 0) {
+            Serial.print("I2C device found at address 0x");
+
+            if (address < 16) {
+                Serial.print("0");
+            }
+
+            Serial.print(address, HEX);
+            Serial.println(" !");
+            deviceCount++;
+
+            delay(1);
         }
-      }
-      deviceCount++;
-      delay(1);
-    }
-    else if (error == 4) {
-      Serial.print("Unknown error at address 0x");
-      if (address < 16) {
-        Serial.print("0");
-      }
-      Serial.println(address, HEX);
-    }
-  }
+        else if (error == 4) {
+            Serial.print("Unknown error at address 0x");
 
-  if (deviceCount == 0) {
-    Serial.println("No I2C devices found\n");
-  } else {
-    Serial.println("Scanning complete\n");
-  }
+            if (address < 16) {
+                Serial.print("0");
+            }
+
+            Serial.println(address, HEX);
+        }
+    }
+
+    if (deviceCount == 0) {
+        Serial.println("No I2C devices found\n");
+    }
+    else {
+        Serial.println("Scanning complete\n");
+    }
 }
 
 void setup() {
   Serial.begin(115200);
   delay(1000);
 
-  // Initialize the I2C bus BEFORE scanning!
   Wire.begin(SDA_PIN, SCL_PIN);
 
-  // Run the scanner
+  // --- Run the I2C Scanner ---
   I2C_SCAN();
 
-  // --- Auto-Configure Discovered Modules ---
-  for (int i = 0; i < numModulesFound; i++) {
-    uint8_t addr = extModules[i];
-    if (addr >= 0x20 && addr <= 0x2F) {
-      // It's a 16-bit module (e.g., Q16 at 0x27)
-      write16(addr, 0x06, 0x0000); // Config as Output
-      write16(addr, 0x02, 0x0000); // Set OFF
-    } else {
-      // It's an 8-bit module (e.g., R4 at 0x73, R8 at 0x71, Q8 at 0x72)
-      write8(addr, 0x03, 0x00);    // Config as Output
-      write8(addr, 0x01, 0x00);    // Set OFF
-    }
-  }
+  // --- Initialize All Modules as Outputs ---
+  // PCA9538 (8-bit) Config Register is 0x03. Write 0x00 to set all pins to Output.
+  write8(R4_ADDR, 0x03, 0x00);
+  write8(R8_ADDR, 0x03, 0x00);
+  write8(Q8_ADDR, 0x03, 0x00);
+  
+  // PCA9555 (16-bit) Config Registers are 0x06 & 0x07.
+  write16(Q16_ADDR, 0x06, 0x0000);
+
+  // Ensure all outputs are OFF on boot (Output Registers)
+  write8(R4_ADDR, 0x01, 0x00);
+  write8(R8_ADDR, 0x01, 0x00);
+  write8(Q8_ADDR, 0x01, 0x00);
+  write16(Q16_ADDR, 0x02, 0x0000);
 
   // Initialize Built-in Buttons
   if (io.begin()) {
@@ -182,30 +187,27 @@ void loop() {
 
   // --- Navigate Pages (Button 1) ---
   if (currentPb1 == LOW && lastPb1State == HIGH) {
-    if (numModulesFound > 0) {
-      currentPage++;
-      if (currentPage >= numModulesFound) currentPage = 0; 
-      tft.fillScreen(TFT_BLACK); 
-    }
+    currentPage++;
+    if (currentPage > 3) currentPage = 0; 
+    tft.fillScreen(TFT_BLACK); 
     delay(50); 
   }
   lastPb1State = currentPb1;
 
   // --- Toggle Outputs ON/OFF (Button 2) ---
   if (currentPb2 == LOW && lastPb2State == HIGH) {
-    if (numModulesFound > 0) {
-      uint8_t addr = extModules[currentPage];
-      
-      // Determine if 16-bit or 8-bit module based on address range
-      if (addr >= 0x20 && addr <= 0x2F) {
-        // Toggle 16 bits
-        moduleStates[currentPage] = (moduleStates[currentPage] == 0x0000) ? 0xFFFF : 0x0000;
-        write16(addr, 0x02, moduleStates[currentPage]);
-      } else {
-        // Toggle 8 bits
-        moduleStates[currentPage] = (moduleStates[currentPage] == 0x00) ? 0xFF : 0x00;
-        write8(addr, 0x01, moduleStates[currentPage] & 0xFF);
-      }
+    if (currentPage == 0) {
+      r4_state = (r4_state == 0x00) ? 0x0F : 0x00; // Toggle 4 bits
+      write8(R4_ADDR, 0x01, r4_state);
+    } else if (currentPage == 1) {
+      r8_state = (r8_state == 0x00) ? 0xFF : 0x00; // Toggle 8 bits
+      write8(R8_ADDR, 0x01, r8_state);
+    } else if (currentPage == 2) {
+      q8_state = (q8_state == 0x00) ? 0xFF : 0x00; // Toggle 8 bits
+      write8(Q8_ADDR, 0x01, q8_state);
+    } else if (currentPage == 3) {
+      q16_state = (q16_state == 0x0000) ? 0xFFFF : 0x0000; // Toggle 16 bits
+      write16(Q16_ADDR, 0x02, q16_state);
     }
     delay(50); 
   }
@@ -216,13 +218,10 @@ void loop() {
     lastDisplayUpdate = millis();
     tft.setCursor(0, 5);
 
-    if (numModulesFound == 0) {
-      tft.setTextColor(TFT_RED, TFT_BLACK);
-      tft.println("  No Expansion      ");
-      tft.println("  Modules Found!    ");
-    } else {
-      displayModule(currentPage);
-    }
+    if (currentPage == 0) displayR4();
+    else if (currentPage == 1) displayR8();
+    else if (currentPage == 2) displayQ8();
+    else if (currentPage == 3) displayQ16();
     
     // UI Navigation Hint 
     tft.setTextColor(TFT_WHITE, TFT_BLACK);
@@ -232,32 +231,76 @@ void loop() {
   }
 }
 
-// --- Dynamic Display Function ---
-void displayModule(int pageIndex) {
-  uint8_t addr = extModules[pageIndex];
-  uint16_t state = moduleStates[pageIndex];
-  
-  bool is16Bit = (addr >= 0x20 && addr <= 0x2F);
-  
-  tft.setTextColor(TFT_CYAN, TFT_BLACK);
-  tft.printf(" Module at 0x%02X     \n", addr);
-  tft.println("--------------------");
-  tft.setTextColor(TFT_WHITE, TFT_BLACK);
+// --- Display Functions ---
 
-  if (is16Bit) {
-    // Display 16 Channels (Q16)
-    for (int i = 0; i < 8; i++) {
-      bool stateA = bitRead(state, i);       
-      bool stateB = bitRead(state, i + 8);   
-      tft.printf(" OUT%02d:%-3s OUT%02d:%-3s\n", 
-                  i + 1, stateA ? "ON" : "OFF", 
-                  i + 9, stateB ? "ON" : "OFF");
-    }
-  } else {
-    // Display 8 Channels (R4, R8, Q8)
-    for (int i = 0; i < 8; i++) {
-      bool chState = bitRead(state, i);
-      tft.printf(" OUT %d: %s \n", i + 1, chState ? "ON " : "OFF");
-    }
+bool checkModule(uint8_t addr) {
+  Wire.beginTransmission(addr);
+  if (Wire.endTransmission() != 0) {
+    tft.setTextColor(TFT_RED, TFT_BLACK);
+    tft.println(" Module Not Found!  ");
+    for(int i=0; i<6; i++) tft.println("                    "); 
+    return false;
+  }
+  return true;
+}
+
+void displayR4() {
+  tft.setTextColor(TFT_GREEN, TFT_BLACK);
+  tft.println("   X-R4 Relays      ");
+  tft.println("--------------------");
+  
+  if (!checkModule(R4_ADDR)) return;
+
+  tft.setTextColor(TFT_WHITE, TFT_BLACK);
+  for (int i = 0; i < 4; i++) {
+    bool state = bitRead(r4_state, i);
+    tft.printf(" RELAY %d: %s \n", i + 1, state ? "ON " : "OFF");
+  }
+  for(int i=0; i<4; i++) tft.println("                    "); 
+}
+
+void displayR8() {
+  tft.setTextColor(TFT_CYAN, TFT_BLACK);
+  tft.println("   X-R8 Relays      ");
+  tft.println("--------------------");
+
+  if (!checkModule(R8_ADDR)) return;
+
+  tft.setTextColor(TFT_WHITE, TFT_BLACK);
+  for (int i = 0; i < 8; i++) {
+    bool state = bitRead(r8_state, i);
+    tft.printf(" RELAY %d: %s \n", i + 1, state ? "ON " : "OFF");
+  }
+}
+
+void displayQ8() {
+  tft.setTextColor(TFT_ORANGE, TFT_BLACK);
+  tft.println("   X-Q8 Outputs     ");
+  tft.println("--------------------");
+
+  if (!checkModule(Q8_ADDR)) return;
+
+  tft.setTextColor(TFT_WHITE, TFT_BLACK);
+  for (int i = 0; i < 8; i++) {
+    bool state = bitRead(q8_state, i);
+    tft.printf(" OUT %d: %s \n", i + 1, state ? "ON " : "OFF");
+  }
+}
+
+void displayQ16() {
+  tft.setTextColor(TFT_YELLOW, TFT_BLACK);
+  tft.println("   X-Q16 Outputs    ");
+  tft.println("--------------------");
+
+  if (!checkModule(Q16_ADDR)) return;
+
+  tft.setTextColor(TFT_WHITE, TFT_BLACK);
+  for (int i = 0; i < 8; i++) {
+    bool stateA = bitRead(q16_state, i);       
+    bool stateB = bitRead(q16_state, i + 8);   
+    
+    tft.printf(" Q%02d:%-3s   Q%02d:%-3s\n", 
+                i + 1, stateA ? "ON" : "OFF", 
+                i + 9, stateB ? "ON" : "OFF");
   }
 }
