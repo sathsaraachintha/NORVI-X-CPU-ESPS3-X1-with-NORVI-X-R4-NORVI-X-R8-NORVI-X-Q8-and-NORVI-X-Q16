@@ -1,6 +1,7 @@
 #include <Wire.h>
 #include <SPI.h>
 #include <PCA9536D.h>
+#include "PCA9538.h"   // <--- Added your new library!
 
 #define LGFX_USE_V1
 #include <LovyanGFX.hpp>
@@ -59,53 +60,101 @@ LGFX tft;
 #define SCL_PIN 9
 
 // PCA9536 Built-in Buttons (I2C 0x41)
-#define IO_PB1  0  // "Next" Button (Not used in this single-page app)
+#define IO_PB1  0  // "Next Page" Button
 #define IO_PB2  3  // "Toggle Outputs" Button
 
 // ==========================================
-// X-Q4 DIRECT GPIO PINS 
-// (Typically shares the same 4 direct lines as the DI4)
+// OUTPUT EXPANSION MODULE ADDRESSES 
+// (Make sure your physical DIP switches match these!)
 // ==========================================
-#define Q4_OUT1 5
-#define Q4_OUT2 6
-#define Q4_OUT3 7
-#define Q4_OUT4 10
+#define R4_ADDR  0x70
+#define R8_ADDR  0x71
+#define Q8_ADDR  0x72
+#define Q16_ADDR 0x27  
 // ==========================================
 
 // --- Objects & State Variables ---
-PCA9536 io;
+PCA9536 io;                 // Built-in CPU buttons
+PCA9538 module_r4(R4_ADDR); // PCA9538 object for R4
+PCA9538 module_r8(R8_ADDR); // PCA9538 object for R8
+PCA9538 module_q8(Q8_ADDR); // PCA9538 object for Q8
 
-// Track the ON/OFF state of the Q4 (false = OFF, true = ON)
-bool q4_state = false; 
+int currentPage = 0; // 0=R4, 1=R8, 2=Q8, 3=Q16
 
+// Track the current ON/OFF state of each module
+uint8_t  r4_state  = 0x00;
+uint8_t  r8_state  = 0x00;
+uint8_t  q8_state  = 0x00;
+uint16_t q16_state = 0x0000;
+
+bool lastPb1State = HIGH;
 bool lastPb2State = HIGH;
 unsigned long lastDisplayUpdate = 0;
+
+// Helper function for the 16-bit Q16 module
+void write16(uint8_t addr, uint8_t reg, uint16_t data) {
+  Wire.beginTransmission(addr);
+  Wire.write(reg);
+  Wire.write(data & 0xFF);         // LSB (Port 0)
+  Wire.write((data >> 8) & 0xFF);  // MSB (Port 1)
+  Wire.endTransmission();
+}
+
+// --- I2C Scanner Function ---
+void I2C_SCAN() {
+    byte error, address;
+    int deviceCount = 0;
+
+    Serial.println("\n--- Scanning I2C Bus ---");
+    for (address = 1; address < 127; address++) {
+        Wire.beginTransmission(address);
+        error = Wire.endTransmission();
+
+        if (error == 0) {
+            Serial.print("I2C device found at address 0x");
+            if (address < 16) {
+                Serial.print("0");
+            }
+            Serial.print(address, HEX);
+            Serial.println(" !");
+            deviceCount++;
+            delay(1);
+        }
+    }
+    if (deviceCount == 0) Serial.println("No I2C devices found\n");
+    else Serial.println("--- Scanning complete ---\n");
+}
 
 void setup() {
   Serial.begin(115200);
   delay(1000);
 
-  // Initialize I2C (Required for the front panel buttons)
   Wire.begin(SDA_PIN, SCL_PIN);
+  I2C_SCAN();
 
-  // --- Initialize Q4 Pins as Outputs ---
-  pinMode(Q4_OUT1, OUTPUT);
-  pinMode(Q4_OUT2, OUTPUT);
-  pinMode(Q4_OUT3, OUTPUT);
-  pinMode(Q4_OUT4, OUTPUT);
+  // --- Initialize Modules using your PCA9538 Library ---
+  for (int i = 0; i < 8; i++) {
+    // R4 Module
+    module_r4.pinMode(i, OUTPUT);
+    module_r4.digitalWrite(i, LOW); // Set OFF
+    
+    // R8 Module
+    module_r8.pinMode(i, OUTPUT);
+    module_r8.digitalWrite(i, LOW); // Set OFF
+    
+    // Q8 Module
+    module_q8.pinMode(i, OUTPUT);
+    module_q8.digitalWrite(i, LOW); // Set OFF
+  }
+  
+  // --- Initialize Q16 Module (Using raw commands because it's 16-bit) ---
+  write16(Q16_ADDR, 0x06, 0x0000); // Config as output
+  write16(Q16_ADDR, 0x02, 0x0000); // Set OFF
 
-  // Ensure they are OFF on boot
-  digitalWrite(Q4_OUT1, LOW);
-  digitalWrite(Q4_OUT2, LOW);
-  digitalWrite(Q4_OUT3, LOW);
-  digitalWrite(Q4_OUT4, LOW);
-
-  // Initialize Built-in Buttons
+  // Initialize PCA9536 for Built-in Buttons
   if (io.begin()) {
     io.pinMode(IO_PB1, INPUT);
     io.pinMode(IO_PB2, INPUT);
-  } else {
-    Serial.println("Front panel buttons not found!");
   }
 
   // Initialize TFT Display
@@ -116,20 +165,36 @@ void setup() {
 }
 
 void loop() {
-  // Read the "Toggle" button
+  bool currentPb1 = io.digitalRead(IO_PB1); 
   bool currentPb2 = io.digitalRead(IO_PB2); 
 
-  // --- Toggle Q4 Outputs ON/OFF (Button 2) ---
+  // --- Navigate Pages (Button 1) ---
+  if (currentPb1 == LOW && lastPb1State == HIGH) {
+    currentPage++;
+    if (currentPage > 3) currentPage = 0; 
+    tft.fillScreen(TFT_BLACK); 
+    delay(50); // Debounce
+  }
+  lastPb1State = currentPb1;
+
+  // --- Toggle Outputs ON/OFF (Button 2) ---
   if (currentPb2 == LOW && lastPb2State == HIGH) {
-    // Flip the state
-    q4_state = !q4_state; 
-    
-    // Apply the new state to all 4 physical pins
-    digitalWrite(Q4_OUT1, q4_state ? HIGH : LOW);
-    digitalWrite(Q4_OUT2, q4_state ? HIGH : LOW);
-    digitalWrite(Q4_OUT3, q4_state ? HIGH : LOW);
-    digitalWrite(Q4_OUT4, q4_state ? HIGH : LOW);
-    
+    if (currentPage == 0) {
+      r4_state = (r4_state == 0x00) ? 0x0F : 0x00; // Toggle logic state
+      for (int i = 0; i < 4; i++) module_r4.digitalWrite(i, bitRead(r4_state, i) ? HIGH : LOW);
+    } 
+    else if (currentPage == 1) {
+      r8_state = (r8_state == 0x00) ? 0xFF : 0x00; 
+      for (int i = 0; i < 8; i++) module_r8.digitalWrite(i, bitRead(r8_state, i) ? HIGH : LOW);
+    } 
+    else if (currentPage == 2) {
+      q8_state = (q8_state == 0x00) ? 0xFF : 0x00; 
+      for (int i = 0; i < 8; i++) module_q8.digitalWrite(i, bitRead(q8_state, i) ? HIGH : LOW);
+    } 
+    else if (currentPage == 3) {
+      q16_state = (q16_state == 0x0000) ? 0xFFFF : 0x0000; 
+      write16(Q16_ADDR, 0x02, q16_state);
+    }
     delay(50); // Debounce
   }
   lastPb2State = currentPb2;
@@ -137,26 +202,91 @@ void loop() {
   // --- Update Display ---
   if (millis() - lastDisplayUpdate >= 100) {
     lastDisplayUpdate = millis();
-    
     tft.setCursor(0, 5);
-    
-    tft.setTextColor(TFT_ORANGE, TFT_BLACK);
-    tft.println("   X-Q4 Outputs     ");
-    tft.println("--------------------");
-    tft.setTextColor(TFT_WHITE, TFT_BLACK);
-    
-    // Display the current state of each pin
-    tft.printf(" OUT 1: %s \n", digitalRead(Q4_OUT1) ? "ON " : "OFF");
-    tft.printf(" OUT 2: %s \n", digitalRead(Q4_OUT2) ? "ON " : "OFF");
-    tft.printf(" OUT 3: %s \n", digitalRead(Q4_OUT3) ? "ON " : "OFF");
-    tft.printf(" OUT 4: %s \n", digitalRead(Q4_OUT4) ? "ON " : "OFF");
 
-    for(int i=0; i<4; i++) tft.println("                    "); 
+    if (currentPage == 0) displayR4();
+    else if (currentPage == 1) displayR8();
+    else if (currentPage == 2) displayQ8();
+    else if (currentPage == 3) displayQ16();
     
-    // UI Navigation Hint 
     tft.setTextColor(TFT_WHITE, TFT_BLACK);
     tft.setCursor(0, 260);
     tft.println("--------------------");
-    tft.println("[B2:TOGGLE ALL]     ");
+    tft.println("[B2:TOGGLE] [B1:NXT]");
+  }
+}
+
+// --- Display Functions ---
+
+bool checkModule(uint8_t addr) {
+  Wire.beginTransmission(addr);
+  if (Wire.endTransmission() != 0) {
+    tft.setTextColor(TFT_RED, TFT_BLACK);
+    tft.println(" Module Not Found!  ");
+    tft.println(" Check DIP Switches!");
+    for(int i=0; i<5; i++) tft.println("                    "); 
+    return false;
+  }
+  return true;
+}
+
+void displayR4() {
+  tft.setTextColor(TFT_GREEN, TFT_BLACK);
+  tft.println("   X-R4 Relays      ");
+  tft.println("--------------------");
+  
+  if (!checkModule(R4_ADDR)) return;
+
+  tft.setTextColor(TFT_WHITE, TFT_BLACK);
+  for (int i = 0; i < 4; i++) {
+    bool state = bitRead(r4_state, i);
+    tft.printf(" RELAY %d: %s \n", i + 1, state ? "ON " : "OFF");
+  }
+  for(int i=0; i<4; i++) tft.println("                    "); 
+}
+
+void displayR8() {
+  tft.setTextColor(TFT_CYAN, TFT_BLACK);
+  tft.println("   X-R8 Relays      ");
+  tft.println("--------------------");
+
+  if (!checkModule(R8_ADDR)) return;
+
+  tft.setTextColor(TFT_WHITE, TFT_BLACK);
+  for (int i = 0; i < 8; i++) {
+    bool state = bitRead(r8_state, i);
+    tft.printf(" RELAY %d: %s \n", i + 1, state ? "ON " : "OFF");
+  }
+}
+
+void displayQ8() {
+  tft.setTextColor(TFT_ORANGE, TFT_BLACK);
+  tft.println("   X-Q8 Outputs     ");
+  tft.println("--------------------");
+
+  if (!checkModule(Q8_ADDR)) return;
+
+  tft.setTextColor(TFT_WHITE, TFT_BLACK);
+  for (int i = 0; i < 8; i++) {
+    bool state = bitRead(q8_state, i);
+    tft.printf(" OUT %d: %s \n", i + 1, state ? "ON " : "OFF");
+  }
+}
+
+void displayQ16() {
+  tft.setTextColor(TFT_YELLOW, TFT_BLACK);
+  tft.println("   X-Q16 Outputs    ");
+  tft.println("--------------------");
+
+  if (!checkModule(Q16_ADDR)) return;
+
+  tft.setTextColor(TFT_WHITE, TFT_BLACK);
+  for (int i = 0; i < 8; i++) {
+    bool stateA = bitRead(q16_state, i);       
+    bool stateB = bitRead(q16_state, i + 8);   
+    
+    tft.printf(" Q%02d:%-3s   Q%02d:%-3s\n", 
+                i + 1, stateA ? "ON" : "OFF", 
+                i + 9, stateB ? "ON" : "OFF");
   }
 }
